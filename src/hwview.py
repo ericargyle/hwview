@@ -22,6 +22,13 @@ import psutil
 import cpuinfo
 
 
+def app_data_dir() -> Path:
+    appdata = os.environ.get("APPDATA")
+    if appdata:
+        return Path(appdata) / "hwview"
+    return Path.home() / ".hwview"
+
+
 def _fmt_bytes(n: int) -> str:
     step = 1024.0
     v = float(n)
@@ -59,9 +66,13 @@ def get_ram_details() -> dict:
 
 
 def get_gpu_details() -> list[dict]:
-    # Windows WMI: Win32_VideoController
+    """Best-effort GPU details.
+
+    Uses WMI on Windows. This import can be flaky in frozen apps if pywin32/wmi
+    submodules aren't packaged; the build workflow includes hidden imports.
+    """
     if platform.system().lower() != "windows":
-        return [{"Name": "(GPU details only available on Windows in this build)", "VRAM": "—"}]
+        return [{"Name": "(GPU details only available on Windows)", "VRAM": "—", "Driver": "—", "Status": "—"}]
 
     try:
         import wmi  # type: ignore
@@ -75,9 +86,9 @@ def get_gpu_details() -> list[dict]:
             driver = getattr(vc, "DriverVersion", None) or "—"
             status = getattr(vc, "Status", None) or "—"
             gpus.append({"Name": str(name), "VRAM": vram, "Driver": str(driver), "Status": str(status)})
-        return gpus or [{"Name": "(No GPU detected via WMI)", "VRAM": "—"}]
+        return gpus or [{"Name": "(No GPU detected via WMI)", "VRAM": "—", "Driver": "—", "Status": "—"}]
     except Exception as e:
-        return [{"Name": f"(GPU lookup failed: {e.__class__.__name__})", "VRAM": "—"}]
+        return [{"Name": f"(GPU lookup failed: {e.__class__.__name__}: {e})", "VRAM": "—", "Driver": "—", "Status": "—"}]
 
 
 class App(tk.Tk):
@@ -124,6 +135,7 @@ class App(tk.Tk):
 
         self.gpu_text = tk.Text(self.gpu_tab, height=14, wrap="word")
         self.gpu_text.pack(fill="both", expand=True)
+        self.gpu_text.insert("1.0", "GPU details will load when you open this tab…\n")
         self.gpu_text.configure(state="disabled")
 
         self.live = ttk.Label(self.live_tab, text="", font=("Consolas", 14))
@@ -137,6 +149,10 @@ class App(tk.Tk):
 
         self.status = ttk.Label(btns, text="", foreground="#555")
         self.status.pack(side="right")
+
+        self.nb.bind("<<NotebookTabChanged>>", self._on_tab_changed)
+
+        self._gpu_loaded = False
 
         self.refresh_all()
         self.after(500, self._tick_live)
@@ -158,7 +174,10 @@ class App(tk.Tk):
     def refresh_all(self):
         self._set_kv(self.cpu_tree, get_cpu_details())
         self._set_kv(self.ram_tree, get_ram_details())
+        # GPU can be slow / fragile in frozen apps; load lazily when tab is opened.
+        self.status.configure(text="Refreshed")
 
+    def _load_gpu(self):
         gpus = get_gpu_details()
         lines = []
         for i, g in enumerate(gpus, start=1):
@@ -172,8 +191,17 @@ class App(tk.Tk):
         self.gpu_text.delete("1.0", "end")
         self.gpu_text.insert("1.0", "\n".join(lines).strip() + "\n")
         self.gpu_text.configure(state="disabled")
+        self._gpu_loaded = True
 
-        self.status.configure(text="Refreshed")
+    def _on_tab_changed(self, _evt=None):
+        # Lazy load GPU tab once.
+        try:
+            tab = self.nb.tab(self.nb.select(), "text")
+            if tab == "GPU" and not getattr(self, "_gpu_loaded", False):
+                self.status.configure(text="Loading GPU info…")
+                self.after(50, self._load_gpu)
+        except Exception:
+            pass
 
     def _tick_live(self):
         try:
@@ -212,9 +240,40 @@ class App(tk.Tk):
         self.status.configure(text="Copied to clipboard")
 
 
+def _log_path() -> Path:
+    try:
+        d = app_data_dir()
+        d.mkdir(parents=True, exist_ok=True)
+        return d / "hwview.log"
+    except Exception:
+        return Path("hwview.log")
+
+
 def main():
-    app = App()
-    app.mainloop()
+    try:
+        app = App()
+        app.mainloop()
+    except Exception as e:
+        # In --windowed mode, crashes can look like "didn't launch".
+        # Write a log and show a message box.
+        try:
+            import traceback
+
+            p = _log_path()
+            p.write_text(traceback.format_exc(), encoding="utf-8")
+        except Exception:
+            pass
+
+        try:
+            import tkinter.messagebox as mb
+
+            mb.showerror(
+                "Simple Hardware Viewer — Error",
+                f"The app failed to start.\n\nError: {e.__class__.__name__}: {e}\n\nA log file was written to:\n{_log_path()}"
+            )
+        except Exception:
+            pass
+        raise
 
 
 if __name__ == "__main__":
