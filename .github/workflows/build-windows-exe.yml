@@ -23,16 +23,16 @@ jobs:
           python -m pip install pyinstaller
 
       - name: Build EXE
-        run: |
-          python -m PyInstaller --onefile --windowed --name hwview \
-            --hidden-import=wmi \
-            --hidden-import=pythoncom \
-            --hidden-import=pywintypes \
-            --hidden-import=win32com \
-            --hidden-import=win32com.client \
-            --collect-submodules=win32com \
-            --collect-submodules=win32com.client \
-            src/hwview.py
+        run: >
+          python -m PyInstaller --onefile --windowed --name hwview
+          --hidden-import=wmi
+          --hidden-import=pythoncom
+          --hidden-import=pywintypes
+          --hidden-import=win32com
+          --hidden-import=win32com.client
+          --collect-submodules=win32com
+          --collect-submodules=win32com.client
+          src/hwview.py
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
